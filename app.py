@@ -6,89 +6,113 @@ import statsmodels.api as sm
 from statsmodels.tsa.stattools import coint
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="NSE Pair Trading Tool", layout="wide")
+# App Configuration
+st.set_page_config(page_title="NSE Pairs Trader", layout="wide")
 
-st.title("📈 Indian Stock Market: Pair Trading Tool")
-st.sidebar.header("Strategy Settings")
+# --- UI TABS ---
+tab_app, tab_instr = st.tabs(["🚀 Trading Dashboard", "📖 How to Use"])
 
-# 1. User Inputs
-ticker1 = st.sidebar.text_input("First Stock (NSE)", "HDFCBANK.NS")
-ticker2 = st.sidebar.text_input("Second Stock (NSE)", "ICICIBANK.NS")
-start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2023-01-01"))
-end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
-
-# 2. Data Fetching with KeyError Fix
-@st.cache_data
-def get_data(t1, t2, start, end):
-    tickers = [t1, t2]
-    raw = yf.download(tickers, start=start, end=end)
+with tab_instr:
+    st.header("Instructions for Pair Trading")
+    st.markdown("""
+    ### **1. Select Your Pair**
+    * Use stock symbols with the `.NS` suffix (e.g., `TCS.NS`, `INFY.NS`).
+    * **Tip:** Choose stocks in the same sector (Banks, IT, Auto) for better cointegration.
     
-    # Handle yfinance MultiIndex specifically to avoid KeyError
-    if 'Close' in raw.columns:
-        df = raw['Close'].dropna()
-    elif 'Adj Close' in raw.columns:
-        df = raw['Adj Close'].dropna()
-    else:
-        st.error("Could not find 'Close' or 'Adj Close' columns.")
-        return None
-    return df
-
-data = get_data(ticker1, ticker2, start_date, end_date)
-
-if data is not None and not data.empty:
-    # 3. Statistical Analysis
-    S1, S2 = data[ticker1], data[ticker2]
+    ### **2. Understand the Signals**
+    * **BUY SPREAD**: The spread is too low. **Buy Stock 2** and **Sell Stock 1**.
+    * **SELL SPREAD**: The spread is too high. **Sell Stock 2** and **Buy Stock 1**.
+    * **EXIT**: The prices have converged. Close both positions to book profit.
     
-    # Check for Cointegration
-    _, p_value, _ = coint(S1, S2)
-    st.metric("Cointegration P-Value", f"{p_value:.4f}")
-    if p_value > 0.05:
-        st.warning("⚠️ These stocks are NOT significantly cointegrated. Signals may be unreliable.")
-
-    # Calculate Spread & Z-Score
-    model = sm.OLS(S2, sm.add_constant(S1)).fit()
-    beta = model.params[ticker1]
-    spread = S2 - (beta * S1)
-    z_score = (spread - spread.mean()) / spread.std()
-
-    # 4. Indian Charges Calculation (Intraday)
-    def get_charges(price, qty=100, side='sell'):
-        turnover = price * qty
-        brokerage = min(20, 0.0003 * turnover)  # ₹20 or 0.03%
-        stt = 0.00025 * turnover if side == 'sell' else 0 # 0.025% on sell side only
-        txn_fee = 0.0000345 * turnover
-        gst = 0.18 * (brokerage + txn_fee)
-        return brokerage + stt + txn_fee + gst
-
-    # 5. Signal Generation
-    results = pd.DataFrame({'Z': z_score, ticker1: S1, ticker2: S2})
-    results['Signal'] = "Neutral"
-    results.loc[results['Z'] < -2.0, 'Signal'] = f"BUY SPREAD (Long {ticker2})"
-    results.loc[results['Z'] > 2.0, 'Signal'] = f"SELL SPREAD (Short {ticker2})"
-    results.loc[results['Z'].abs() < 0.5, 'Signal'] = "EXIT"
-
-    # 6. Display Output
-    col1, col2 = st.columns(2)
+    ### **3. Review Costs**
+    * The 'Est. Charges' includes **STT (0.025% on sell)**, **Brokerage (capped at ₹20)**, and **18% GST** as per Indian norms.
     
-    with col1:
-        st.subheader("Z-Score Thresholds")
-        fig, ax = plt.subplots()
-        ax.plot(z_score, label='Z-Score', color='royalblue')
-        ax.axhline(2, color='red', linestyle='--', label='Sell Threshold')
-        ax.axhline(-2, color='green', linestyle='--', label='Buy Threshold')
-        ax.axhline(0, color='black', alpha=0.3)
-        ax.legend()
+    ### **4. Risk Management**
+    * Only trade if the **Cointegration P-Value < 0.05**. If it is higher, the stocks do not move together reliably.
+    """)
+
+with tab_app:
+    st.sidebar.header("Strategy Settings")
+    t1 = st.sidebar.text_input("Stock 1 (e.g. HDFCBANK.NS)", "HDFCBANK.NS")
+    t2 = st.sidebar.text_input("Stock 2 (e.g. ICICIBANK.NS)", "ICICIBANK.NS")
+    days = st.sidebar.slider("Historical Lookback (Days)", 100, 730, 365)
+    z_thresh = st.sidebar.slider("Z-Score Entry Threshold", 1.5, 3.0, 2.0)
+
+    # Data Fetching Logic
+    @st.cache_data
+    def load_nse_data(ticker1, ticker2, lookback):
+        end = pd.Timestamp.now()
+        start = end - pd.Timedelta(days=lookback)
+        raw = yf.download([ticker1, ticker2], start=start, end=end)
+        
+        # Safe MultiIndex indexing for yfinance
+        if 'Close' in raw.columns:
+            df = raw['Close'].dropna()
+        else:
+            df = raw['Adj Close'].dropna()
+        return df
+
+    try:
+        df = load_nse_data(t1, t2, days)
+        
+        # Stats Calculation
+        S1, S2 = df[t1], df[t2]
+        score, pvalue, _ = coint(S1, S2)
+        
+        # Hedge Ratio (Beta) calculation
+        model = sm.OLS(S2, sm.add_constant(S1)).fit()
+        beta = model.params[t1]
+        spread = S2 - (beta * S1)
+        z_score = (spread - spread.mean()) / spread.std()
+
+        # Display Top Metrics
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Cointegration (P-Value)", f"{pvalue:.4f}", delta="Good" if pvalue < 0.05 else "Weak", delta_color="normal")
+        m2.metric("Current Z-Score", f"{z_score.iloc[-1]:.2f}")
+        
+        # Indian Cost Estimator (Simplified Zerodha model)
+        price_val = S2.iloc[-1]
+        charges = (min(20, 0.0003 * price_val) + (0.00025 * price_val) + (0.0000345 * price_val)) * 1.18
+        m3.metric("Est. Charges/Unit", f"₹{charges:.2f}")
+
+        # Current Signal UI
+        st.divider()
+        current_z = z_score.iloc[-1]
+        if current_z < -z_thresh:
+            st.success(f"### 🟢 SIGNAL: BUY SPREAD\n**Strategy:** Buy {t2} | Sell {t1}")
+        elif current_z > z_thresh:
+            st.error(f"### 🔴 SIGNAL: SELL SPREAD\n**Strategy:** Sell {t2} | Buy {t1}")
+        elif abs(current_z) < 0.5:
+            st.warning(f"### 🟡 SIGNAL: EXIT\n**Strategy:** Square off all positions.")
+        else:
+            st.info("### ⚪ SIGNAL: WAIT\nSpread is in neutral territory.")
+
+        # Visual Chart
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(z_score, color='silver', label='Z-Score')
+        ax.axhline(z_thresh, color='red', linestyle='--')
+        ax.axhline(-z_thresh, color='green', linestyle='--')
+        ax.axhline(0, color='black', alpha=0.5)
+        # Highlight entry points
+        ax.scatter(z_score[z_score > z_thresh].index, z_score[z_score > z_thresh], color='red', marker='v')
+        ax.scatter(z_score[z_score < -z_thresh].index, z_score[z_score < -z_thresh], color='green', marker='^')
         st.pyplot(fig)
 
-    with col2:
-        st.subheader("Current Market Signal")
-        latest_signal = results['Signal'].iloc[-1]
-        latest_price = S2.iloc[-1]
-        cost = get_charges(latest_price, side='sell' if "SELL" in latest_signal else 'buy')
-        
-        st.info(f"Latest Signal: **{latest_signal}**")
-        st.write(f"Estimated NSE Charges for 100 shares of {ticker2}: **₹{cost:.2f}**")
-        st.dataframe(results.tail(10))
+        # Historical Dataframe with Style
+        st.subheader("Recent Signal History")
+        history = pd.DataFrame({'Z-Score': z_score, 'Stock1': S1, 'Stock2': S2})
+        history['Action'] = "Wait"
+        history.loc[history['Z-Score'] < -z_thresh, 'Action'] = "BUY SPREAD"
+        history.loc[history['Z-Score'] > z_thresh, 'Action'] = "SELL SPREAD"
+        history.loc[history['Z-Score'].abs() < 0.5, 'Action'] = "EXIT"
 
-else:
-    st.error("No data found. Ensure the tickers have the '.NS' suffix.")
+        def style_rows(row):
+            if row['Action'] == "BUY SPREAD": return ['background-color: #d4edda'] * 4
+            if row['Action'] == "SELL SPREAD": return ['background-color: #f8d7da'] * 4
+            if row['Action'] == "EXIT": return ['background-color: #fff3cd'] * 4
+            return [''] * 4
+
+        st.dataframe(history.tail(15).style.apply(style_rows, axis=1), use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Please ensure tickers are correct (e.g., RELIANCE.NS). Error: {e}")
