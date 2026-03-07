@@ -15,104 +15,118 @@ tab_app, tab_instr = st.tabs(["🚀 Trading Dashboard", "📖 How to Use"])
 with tab_instr:
     st.header("Instructions for Pair Trading")
     st.markdown("""
-    ### **1. Select Your Pair**
-    * Use stock symbols with the `.NS` suffix (e.g., `TCS.NS`, `INFY.NS`).
-    * **Tip:** Choose stocks in the same sector (Banks, IT, Auto) for better cointegration.
+    ### **1. Setup**
+    * Enter NSE symbols with `.NS` (e.g., `RELIANCE.NS`, `ONGC.NS`).
+    * Use the **Z-Score Threshold** to control risk (Standard is 2.0).
     
-    ### **2. Understand the Signals**
-    * **BUY SPREAD**: The spread is too low. **Buy Stock 2** and **Sell Stock 1**.
-    * **SELL SPREAD**: The spread is too high. **Sell Stock 2** and **Buy Stock 1**.
-    * **EXIT**: The prices have converged. Close both positions to book profit.
+    ### **2. Execution Guide**
+    * <span style='color:green; font-weight:bold;'>BUY SPREAD</span>: Buy Stock 2 and Short Stock 1.
+    * <span style='color:red; font-weight:bold;'>SELL SPREAD</span>: Short Stock 2 and Buy Stock 1.
+    * <span style='color:orange; font-weight:bold;'>EXIT</span>: Close both positions immediately to realize profit.
     
-    ### **3. Review Costs**
-    * The 'Est. Charges' includes **STT (0.025% on sell)**, **Brokerage (capped at ₹20)**, and **18% GST** as per Indian norms.
-    
-    ### **4. Risk Management**
-    * Only trade if the **Cointegration P-Value < 0.05**. If it is higher, the stocks do not move together reliably.
-    """)
+    ### **3. Charges**
+    * Estimates include **STT (0.025%)**, **Brokerage (₹20 cap)**, and **18% GST**.
+    """, unsafe_allow_html=True)
 
 with tab_app:
-    st.sidebar.header("Strategy Settings")
-    t1 = st.sidebar.text_input("Stock 1 (e.g. HDFCBANK.NS)", "HDFCBANK.NS")
-    t2 = st.sidebar.text_input("Stock 2 (e.g. ICICIBANK.NS)", "ICICIBANK.NS")
-    days = st.sidebar.slider("Historical Lookback (Days)", 100, 730, 365)
-    z_thresh = st.sidebar.slider("Z-Score Entry Threshold", 1.5, 3.0, 2.0)
+    st.sidebar.header("Market Settings")
+    t1 = st.sidebar.text_input("Stock 1 (Hedge)", "HDFCBANK.NS")
+    t2 = st.sidebar.text_input("Stock 2 (Target)", "ICICIBANK.NS")
+    days = st.sidebar.slider("Lookback Days", 100, 730, 365)
+    z_thresh = st.sidebar.slider("Z-Score Threshold", 1.5, 3.0, 2.0)
 
-    # Data Fetching Logic
     @st.cache_data
-    def load_nse_data(ticker1, ticker2, lookback):
-        end = pd.Timestamp.now()
-        start = end - pd.Timedelta(days=lookback)
-        raw = yf.download([ticker1, ticker2], start=start, end=end)
-        
-        # Safe MultiIndex indexing for yfinance
-        if 'Close' in raw.columns:
-            df = raw['Close'].dropna()
-        else:
-            df = raw['Adj Close'].dropna()
-        return df
+    def load_data(ticker1, ticker2, lookback):
+        raw = yf.download([ticker1, ticker2], period=f"{lookback}d")
+        return raw['Close'].dropna() if 'Close' in raw.columns else raw['Adj Close'].dropna()
 
     try:
-        df = load_nse_data(t1, t2, days)
-        
-        # Stats Calculation
+        df = load_data(t1, t2, days)
         S1, S2 = df[t1], df[t2]
-        score, pvalue, _ = coint(S1, S2)
         
-        # Hedge Ratio (Beta) calculation
+        # Statistics
+        _, pvalue, _ = coint(S1, S2)
         model = sm.OLS(S2, sm.add_constant(S1)).fit()
         beta = model.params[t1]
         spread = S2 - (beta * S1)
         z_score = (spread - spread.mean()) / spread.std()
-
-        # Display Top Metrics
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Cointegration (P-Value)", f"{pvalue:.4f}", delta="Good" if pvalue < 0.05 else "Weak", delta_color="normal")
-        m2.metric("Current Z-Score", f"{z_score.iloc[-1]:.2f}")
         
-        # Indian Cost Estimator (Simplified Zerodha model)
-        price_val = S2.iloc[-1]
-        charges = (min(20, 0.0003 * price_val) + (0.00025 * price_val) + (0.0000345 * price_val)) * 1.18
-        m3.metric("Est. Charges/Unit", f"₹{charges:.2f}")
-
-        # Current Signal UI
-        st.divider()
-        current_z = z_score.iloc[-1]
-        if current_z < -z_thresh:
-            st.success(f"### 🟢 SIGNAL: BUY SPREAD\n**Strategy:** Buy {t2} | Sell {t1}")
-        elif current_z > z_thresh:
-            st.error(f"### 🔴 SIGNAL: SELL SPREAD\n**Strategy:** Sell {t2} | Buy {t1}")
-        elif abs(current_z) < 0.5:
-            st.warning(f"### 🟡 SIGNAL: EXIT\n**Strategy:** Square off all positions.")
+        # Signal Logic
+        curr_z = z_score.iloc[-1]
+        
+        st.subheader("🎯 Live Execution Signal")
+        
+        if curr_z < -z_thresh:
+            st.markdown(f"""
+                <div style="padding:20px; border-radius:10px; background-color:#d4edda; border:2px solid #28a745">
+                    <h2 style="color:#155724; margin:0;">ACTION: BUY SPREAD</h2>
+                    <p style="font-size:20px; color:#155724;">
+                        🟢 <b>BUY {t2}</b> (Quantity: 100)<br>
+                        🔴 <b>SELL {t1}</b> (Quantity: {round(100*beta)})
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
+            
+        elif curr_z > z_thresh:
+            st.markdown(f"""
+                <div style="padding:20px; border-radius:10px; background-color:#f8d7da; border:2px solid #dc3545">
+                    <h2 style="color:#721c24; margin:0;">ACTION: SELL SPREAD</h2>
+                    <p style="font-size:20px; color:#721c24;">
+                        🔴 <b>SELL {t2}</b> (Quantity: 100)<br>
+                        🟢 <b>BUY {t1}</b> (Quantity: {round(100*beta)})
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
+            
+        elif abs(curr_z) < 0.5:
+            st.markdown(f"""
+                <div style="padding:20px; border-radius:10px; background-color:#fff3cd; border:2px solid #ffc107">
+                    <h2 style="color:#856404; margin:0;">ACTION: EXIT SIGNAL</h2>
+                    <p style="font-size:20px; color:#856404;">
+                        ⚠️ <b>SQUARE OFF ALL POSITIONS</b><br>
+                        Sell your holdings in {t2} and Buy back {t1} (or vice-versa).
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
         else:
-            st.info("### ⚪ SIGNAL: WAIT\nSpread is in neutral territory.")
+            st.info("⌛ **SIGNAL: NEUTRAL** - Wait for Z-Score to hit thresholds.")
 
-        # Visual Chart
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(z_score, color='silver', label='Z-Score')
-        ax.axhline(z_thresh, color='red', linestyle='--')
-        ax.axhline(-z_thresh, color='green', linestyle='--')
-        ax.axhline(0, color='black', alpha=0.5)
-        # Highlight entry points
-        ax.scatter(z_score[z_score > z_thresh].index, z_score[z_score > z_thresh], color='red', marker='v')
-        ax.scatter(z_score[z_score < -z_thresh].index, z_score[z_score < -z_thresh], color='green', marker='^')
-        st.pyplot(fig)
+        # Metrics & Visuals
+        st.divider()
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.metric("P-Value (Cointegration)", f"{pvalue:.4f}", help="Below 0.05 is ideal")
+            st.metric("Hedge Ratio (Beta)", f"{beta:.3f}")
+            price_t2 = S2.iloc[-1]
+            charges = (min(20, 0.0003 * price_t2) + (0.00025 * price_t2) + (0.0000345 * price_t2)) * 1.18
+            st.metric("Est. Taxes/Unit", f"₹{charges:.2f}")
 
-        # Historical Dataframe with Style
-        st.subheader("Recent Signal History")
-        history = pd.DataFrame({'Z-Score': z_score, 'Stock1': S1, 'Stock2': S2})
-        history['Action'] = "Wait"
+        with col2:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(z_score, color='gray', alpha=0.4)
+            ax.axhline(z_thresh, color='red', linestyle='--')
+            ax.axhline(-z_thresh, color='green', linestyle='--')
+            ax.axhline(0, color='black', linewidth=1)
+            ax.fill_between(z_score.index, z_thresh, z_score, where=(z_score >= z_thresh), color='red', alpha=0.3)
+            ax.fill_between(z_score.index, -z_thresh, z_score, where=(z_score <= -z_thresh), color='green', alpha=0.3)
+            st.pyplot(fig)
+
+        # Historical Log with Color Coding
+        st.subheader("📜 Recent Trade Logs")
+        history = pd.DataFrame({'Z-Score': z_score, t1: S1, t2: S2})
+        history['Action'] = "Neutral"
         history.loc[history['Z-Score'] < -z_thresh, 'Action'] = "BUY SPREAD"
         history.loc[history['Z-Score'] > z_thresh, 'Action'] = "SELL SPREAD"
         history.loc[history['Z-Score'].abs() < 0.5, 'Action'] = "EXIT"
 
-        def style_rows(row):
-            if row['Action'] == "BUY SPREAD": return ['background-color: #d4edda'] * 4
-            if row['Action'] == "SELL SPREAD": return ['background-color: #f8d7da'] * 4
-            if row['Action'] == "EXIT": return ['background-color: #fff3cd'] * 4
-            return [''] * 4
+        def color_map(val):
+            if val == "BUY SPREAD": return 'background-color: #d4edda; color: #155724'
+            if val == "SELL SPREAD": return 'background-color: #f8d7da; color: #721c24'
+            if val == "EXIT": return 'background-color: #fff3cd; color: #856404'
+            return ''
 
-        st.dataframe(history.tail(15).style.apply(style_rows, axis=1), use_container_width=True)
+        st.dataframe(history.tail(20).style.applymap(color_map, subset=['Action']), use_container_width=True)
 
     except Exception as e:
-        st.error(f"Please ensure tickers are correct (e.g., RELIANCE.NS). Error: {e}")
+        st.warning(f"Waiting for valid NSE tickers... (Ensure you use .NS suffix)")
