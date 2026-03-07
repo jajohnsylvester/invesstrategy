@@ -2,38 +2,45 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
-from statsmodels.tsa.stattools import coint
-import matplotlib.pyplot as plt
 
-# 1. Fetch Indian Stock Data (Suffix .NS for National Stock Exchange)
+# 1. Fetch Data with improved indexing
 tickers = ['HDFCBANK.NS', 'ICICIBANK.NS']
-data = yf.download(tickers, start='2023-01-01', end='2025-01-01')['Adj Close']
+raw_data = yf.download(tickers, start='2023-01-01', end='2025-01-01')
 
-# 2. Check for Cointegration
-# Null Hypothesis: No cointegration. If p-value < 0.05, they are cointegrated.
-score, pvalue, _ = coint(data[tickers[0]], data[tickers[1]])
-print(f"Cointegration P-Value: {pvalue:.4f}")
+# This fixes the KeyError by ensuring we grab the 'Close' column safely
+if 'Close' in raw_data.columns:
+    data = raw_data['Close']
+elif 'Adj Close' in raw_data.columns:
+    data = raw_data['Adj Close']
+else:
+    raise ValueError("Could not find Close or Adj Close in data")
 
-# 3. Calculate the Spread using Linear Regression (Hedge Ratio)
-# Spread = Stock1 - (Beta * Stock2)
-S1 = data[tickers[0]]
-S2 = data[tickers[1]]
+# Drop any missing values to prevent math errors
+data = data.dropna()
+
+# 2. Strategy Logic (Rest of the code remains similar)
+S1 = data['HDFCBANK.NS']
+S2 = data['ICICIBANK.NS']
+
+# Add constant for OLS
 S1_with_const = sm.add_constant(S1)
 model = sm.OLS(S2, S1_with_const).fit()
-beta = model.params[tickers[0]]
-spread = S2 - beta * S1
+beta = model.params['HDFCBANK.NS']
 
-# 4. Generate Trading Signals (Z-Score)
-def calculate_zscore(series):
-    return (series - series.mean()) / np.std(series)
+spread = S2 - (beta * S1)
+z_score = (spread - spread.mean()) / np.std(spread)
 
-z_score = calculate_zscore(spread)
+# 3. Create Results DataFrame
+df = pd.DataFrame({
+    'ICICI': S2,
+    'HDFC': S1,
+    'Z': z_score
+})
 
-# 5. Plotting the Strategy
-plt.figure(figsize=(12, 6))
-z_score.plot()
-plt.axhline(z_score.mean(), color='black')
-plt.axhline(2.0, color='red', linestyle='--')   # Sell threshold
-plt.axhline(-2.0, color='green', linestyle='--') # Buy threshold
-plt.title(f"Z-Score Spread: {tickers[0]} vs {tickers[1]}")
-plt.show()
+# 4. Generate Signal Column
+df['Signal'] = 'Wait'
+df.loc[df['Z'] < -2.0, 'Signal'] = 'BUY SPREAD (Long ICICI, Short HDFC)'
+df.loc[df['Z'] > 2.0, 'Signal'] = 'SELL SPREAD (Short ICICI, Long HDFC)'
+df.loc[df['Z'].abs() < 0.5, 'Signal'] = 'EXIT'
+
+print(df.tail(10))
