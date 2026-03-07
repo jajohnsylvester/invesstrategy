@@ -7,4 +7,6 @@ scikit-learn
 tensorflow
 matplotlib
 plotly
-quantstats 
+quantstats
+statsmodels
+
