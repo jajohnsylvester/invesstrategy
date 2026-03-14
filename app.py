@@ -85,18 +85,15 @@ def screen_universe(tickers, strategy, limit, b_yield):
         except: continue
     return pd.DataFrame(results)
 
-# --- STYLING FUNCTIONS ---
+# --- STYLING & CONVERSION ---
 def style_signal(val):
-    if 'BUY' in val:
-        color = '#d4edda' # Light green background
-        text_color = '#155724' # Dark green text
-    elif 'SELL' in val:
-        color = '#f8d7da' # Light red background
-        text_color = '#721c24' # Dark red text
-    else:
-        color = 'transparent'
-        text_color = 'inherit'
-    return f'background-color: {color}; color: {text_color}; font-weight: bold;'
+    if 'BUY' in val: color = '#d4edda'; text = '#155724'
+    elif 'SELL' in val: color = '#f8d7da'; text = '#721c24'
+    else: color = 'transparent'; text = 'inherit'
+    return f'background-color: {color}; color: {text}; font-weight: bold;'
+
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
 
 # --- UI EXECUTION ---
 ticker_list = fetch_nifty_500_tickers()
@@ -120,12 +117,22 @@ for i, (name, criteria) in enumerate(strategies):
         df = screen_universe(ticker_list, name, target_count, bond_yield)
         
         if not df.empty:
-            # Apply styling
+            # 1. ADDED EXPORT OPTION
+            csv_data = convert_df_to_csv(df)
+            st.download_button(
+                label=f"📥 Export {name} List to CSV",
+                data=csv_data,
+                file_name=f"{name.lower().replace(' ', '_')}_report.csv",
+                mime='text/csv'
+            )
+            
+            # 2. ADDED STYLED DATAFRAME
             styled_df = df.style.applymap(style_signal, subset=['Signal']) \
-                                .highlight_max(subset=['F-Score'], color='#fff3cd') # Highlight top score
+                                .highlight_max(subset=['F-Score'], color='#fff3cd')
             
             st.dataframe(styled_df, use_container_width=True, hide_index=True)
             
+            # 3. SECTOR CHART
             st.plotly_chart(px.pie(df, names='Sector', title=f'{name} Sector Mix', hole=0.4), use_container_width=True)
         else:
-            st.warning("Fetching and screening stocks...")
+            st.warning("Scanning Nifty 500 universe for matches...")
