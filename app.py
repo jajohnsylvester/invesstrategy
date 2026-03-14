@@ -3,13 +3,14 @@ import yfinance as yf
 import pandas as pd
 import plotly.express as px
 import math
+import io
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategy Dashboard", layout="wide")
 st.title("📊 Strategy Dashboard")
 st.markdown("---")
 
-# --- SIDEBAR CONTROLS ---
+# --- SIDEBAR ---
 st.sidebar.header("Global Settings")
 bond_yield = st.sidebar.slider("India 10Y Bond Yield (%)", 4.0, 10.0, 6.68, 0.01)
 target_count = st.sidebar.number_input("Target Stocks per Strategy", 10, 50, 20)
@@ -48,8 +49,6 @@ def screen_universe(tickers, strategy, limit, b_yield):
         try:
             s = yf.Ticker(ticker)
             info = s.info
-            
-            # Fundamentals
             pe = info.get('trailingPE', 0)
             eps = info.get('trailingEps', 0)
             bvps = info.get('bookValue', 0)
@@ -59,18 +58,12 @@ def screen_universe(tickers, strategy, limit, b_yield):
             rev_growth = info.get('revenueGrowth', 0) * 100
             price = info.get('currentPrice')
 
-            # --- VALUATION: GRAHAM NUMBER & SIGNAL ---
-            # Graham Number = sqrt(22.5 * EPS * BVPS)
             graham_num = math.sqrt(22.5 * eps * bvps) if eps > 0 and bvps > 0 else 0
-            margin = ((graham_num - price) / graham_num) * 100 if graham_num > 0 else -100
             
             signal = "HOLD"
-            if price < graham_num:
-                signal = "BUY (Under Valued)"
-            elif price > (graham_num * 1.5):
-                signal = "SELL (Over Valued)"
+            if price < graham_num: signal = "BUY (Under Valued)"
+            elif price > (graham_num * 1.5): signal = "SELL (Over Valued)"
 
-            # --- STRATEGY FILTERS ---
             match = False
             if strategy == "Coffee Can" and roic > 15 and rev_growth > 10: match = True
             elif strategy == "Magic Formula" and roic > 18 and ey > 6: match = True
@@ -80,11 +73,11 @@ def screen_universe(tickers, strategy, limit, b_yield):
                 results.append({
                     "Company Name": info.get('longName', ticker),
                     "Ticker": ticker,
+                    "Sector": info.get('sector', 'Other'),
                     "Signal": signal,
                     "F-Score": calculate_score(pe, roic, growth, ey, strategy),
                     "Price": price,
                     "Graham No.": round(graham_num, 2),
-                    "Margin %": round(margin, 2),
                     "P/E": round(pe, 2),
                     "ROIC %": round(roic, 2),
                     "PEG": round(pe/growth, 2) if growth > 0 else "N/A"
@@ -92,9 +85,14 @@ def screen_universe(tickers, strategy, limit, b_yield):
         except: continue
     return pd.DataFrame(results)
 
+# --- CSV EXPORT HELPER ---
+def convert_df(df):
+    return df.to_csv(index=False).encode('utf-8')
+
 # --- UI EXECUTION ---
 ticker_list = fetch_nifty_500_tickers()
 tabs = st.tabs(["Coffee Can Portfolio", "Magic Formula", "Beating the Market"])
+
 strategies = [
     ("Coffee Can", {"Min ROCE": "15%", "Min Rev Growth": "10%", "Valuation": "Graham No."}),
     ("Magic Formula", {"Min ROIC": "18%", "Min Earn Yield": "6%", "Valuation": "Earnings Yield"}),
@@ -111,13 +109,16 @@ for i, (name, criteria) in enumerate(strategies):
         
         st.markdown("---")
         df = screen_universe(ticker_list, name, target_count, bond_yield)
+        
         if not df.empty:
-            # Color coding signals for better visibility
-            def color_signal(val):
-                color = 'green' if 'BUY' in val else 'red' if 'SELL' in val else 'gray'
-                return f'color: {color}; font-weight: bold'
-
-            st.dataframe(df.style.applymap(color_signal, subset=['Signal']), use_container_width=True, hide_index=True)
-            st.plotly_chart(px.pie(df, names='Sector' if 'Sector' in df else 'Signal', title=f'{name} Analysis Mix', hole=0.4), use_container_width=True)
+            # Download Button
+            csv = convert_df(df)
+            st.download_button(label=f"📥 Download {name} List", data=csv, file_name=f'{name.lower()}_stocks.csv', mime='text/csv')
+            
+            # Display Table
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            
+            # Sector Pie Chart
+            st.plotly_chart(px.pie(df, names='Sector', title=f'{name} Sector Mix', hole=0.4), use_container_width=True)
         else:
-            st.warning("Fetching real-time data from Nifty 500...")
+            st.warning("Scanning Nifty 500 universe...")
