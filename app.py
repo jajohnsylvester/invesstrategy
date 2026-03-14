@@ -85,9 +85,18 @@ def screen_universe(tickers, strategy, limit, b_yield):
         except: continue
     return pd.DataFrame(results)
 
-# --- CSV EXPORT HELPER ---
-def convert_df(df):
-    return df.to_csv(index=False).encode('utf-8')
+# --- STYLING FUNCTIONS ---
+def style_signal(val):
+    if 'BUY' in val:
+        color = '#d4edda' # Light green background
+        text_color = '#155724' # Dark green text
+    elif 'SELL' in val:
+        color = '#f8d7da' # Light red background
+        text_color = '#721c24' # Dark red text
+    else:
+        color = 'transparent'
+        text_color = 'inherit'
+    return f'background-color: {color}; color: {text_color}; font-weight: bold;'
 
 # --- UI EXECUTION ---
 ticker_list = fetch_nifty_500_tickers()
@@ -111,14 +120,12 @@ for i, (name, criteria) in enumerate(strategies):
         df = screen_universe(ticker_list, name, target_count, bond_yield)
         
         if not df.empty:
-            # Download Button
-            csv = convert_df(df)
-            st.download_button(label=f"📥 Download {name} List", data=csv, file_name=f'{name.lower()}_stocks.csv', mime='text/csv')
+            # Apply styling
+            styled_df = df.style.applymap(style_signal, subset=['Signal']) \
+                                .highlight_max(subset=['F-Score'], color='#fff3cd') # Highlight top score
             
-            # Display Table
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
             
-            # Sector Pie Chart
             st.plotly_chart(px.pie(df, names='Sector', title=f'{name} Sector Mix', hole=0.4), use_container_width=True)
         else:
-            st.warning("Scanning Nifty 500 universe...")
+            st.warning("Fetching and screening stocks...")
