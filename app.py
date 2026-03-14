@@ -30,7 +30,7 @@ def fetch_tickers():
         df = pd.read_csv(io.StringIO(response.text))
         return [f"{symbol}.NS" for symbol in df['Symbol'].tolist()]
     except:
-        return ["TITAN.NS", "PIDILITIND.NS", "RELIANCE.NS", "HAL.NS", "CDSL.NS"]
+        return ["TITAN.NS", "PIDILITIND.NS", "RELIANCE.NS", "HAL.NS", "CDSL.NS", "TATASTEEL.NS"]
 
 def calculate_score(pe, roic, growth, ey, strategy):
     score = 0
@@ -52,7 +52,6 @@ def process_strategy(tickers, strategy, limit, b_yield):
     results = []
     progress_bar = st.progress(0, text=f"Scanning Nifty 500 for {strategy}...")
     
-    # Increase scan range to 250 to ensure we find enough stocks
     for idx, ticker in enumerate(tickers[:250]):
         if len(results) >= limit: break
         try:
@@ -68,24 +67,37 @@ def process_strategy(tickers, strategy, limit, b_yield):
             rev_growth = info.get('revenueGrowth', 0) * 100
             price = info.get('currentPrice', 0)
 
-            # --- GRAHAM NUMBER (Display Only, not for Filtering) ---
+            # --- GRAHAM NUMBER (Display Only) ---
             graham_num = math.sqrt(22.5 * eps * bvps) if eps > 0 and bvps > 0 else 0
             
-            # --- STRATEGY FILTERS ---
+            # --- STRATEGY FILTERS & SIGNALS ---
             match = False
             signal = "HOLD"
             
+            # 1. Coffee Can Logic
             if strategy == "Coffee Can" and roic > 15 and rev_growth > 10:
                 match = True
                 if roic > 20 and rev_growth > 15: signal = "BUY (Quality)"
+                if pe > 80: signal = "SELL (Excessive PE)" # Typical Coffee Can exit on extreme valuation
                 
+            # 2. Magic Formula Logic
             elif strategy == "Magic Formula" and roic > 18 and ey > 6:
                 match = True
-                if ey > 10: signal = "BUY (Value)"
+                if ey > 10: signal = "BUY (Deep Value)"
+                if ey < 4: signal = "SELL (Yield Compression)"
                 
+            # 3. Beating the Market (Lynch) Logic
             elif strategy == "Beating the Market" and (pe/growth if growth > 0 else 99) < 1.5 and ey > b_yield:
                 match = True
-                if (pe/growth if growth > 0 else 99) < 1.0: signal = "BUY (Growth)"
+                peg = (pe/growth if growth > 0 else 99)
+                if peg < 1.0: signal = "BUY (Underpriced Growth)"
+                
+                # Lynch specific sell: P/E is double the growth rate
+                if growth > 0 and pe > (2 * growth):
+                    signal = "SELL (P/E > 2x Growth)"
+                # Stalwart rotation signal (Price > 1.5x Graham as a proxy for 50% gain)
+                elif growth < 15 and price > (1.5 * graham_num):
+                    signal = "SELL (Stalwart Rotation)"
 
             if match:
                 results.append({
@@ -93,7 +105,7 @@ def process_strategy(tickers, strategy, limit, b_yield):
                     "Ticker": ticker,
                     "Sector": info.get('sector', 'Other'),
                     "Signal": signal,
-                    "F-Score / 10": calculate_score(pe, roic, growth, ey, strategy),
+                    "F-Score": calculate_score(pe, roic, growth, ey, strategy),
                     "Price": price,
                     "Graham Number": round(graham_num, 2),
                     "P/E": round(pe, 2),
@@ -108,9 +120,11 @@ def process_strategy(tickers, strategy, limit, b_yield):
 
 # --- STYLING ---
 def color_signal(val):
-    color = '#d4edda' if 'BUY' in val else 'transparent'
-    text = '#155724' if 'BUY' in val else 'inherit'
-    return f'background-color: {color}; color: {text}; font-weight: bold;'
+    if 'BUY' in val:
+        return 'background-color: #d4edda; color: #155724; font-weight: bold;'
+    elif 'SELL' in val:
+        return 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+    return ''
 
 # --- MAIN UI ---
 ticker_list = fetch_tickers()
@@ -118,21 +132,21 @@ tabs = st.tabs(["Coffee Can Portfolio", "Magic Formula", "Beating the Market"])
 
 strategy_meta = {
     "Coffee Can": {
-        "desc": "Focus on 'Consistent Compounders' with high capital efficiency.",
-        "buy": "ROCE > 15%, Revenue Growth > 10% for 10 years.",
-        "sell": "Only if management integrity fails or business model is disrupted.",
+        "desc": "Focus on 'Consistent Compounders'.",
+        "buy": "ROCE > 15%, Revenue Growth > 10%.",
+        "sell": "Management fraud or P/E exceeds sustainable limits (>80).",
         "metrics": {"Min ROCE": "15%", "Min Growth": "10%"}
     },
     "Magic Formula": {
         "desc": "Buying 'Good Companies' at 'Cheap Prices'.",
         "buy": "High Return on Capital + High Earnings Yield.",
-        "sell": "Strictly rebalance every 12 months.",
+        "sell": "Rebalance annually or if Earnings Yield drops below 4%.",
         "metrics": {"Min ROIC": "18%", "Min Earn Yield": "6%"}
     },
     "Beating the Market": {
-        "desc": "Peter Lynch's GARP (Growth at a Reasonable Price).",
+        "desc": "Peter Lynch's Growth at a Reasonable Price.",
         "buy": f"PEG < 1.5 and Earnings Yield > {bond_yield}%.",
-        "sell": "Stalwarts at 40% gain; Fast Growers if P/E > 2x Growth.",
+        "sell": "Stalwarts at 40-50% gain; Fast Growers if P/E > 2x Growth.",
         "metrics": {"Max PEG": "1.5", "Yield Gap": f">{bond_yield}%"}
     }
 }
@@ -140,22 +154,11 @@ strategy_meta = {
 for i, (name, meta) in enumerate(strategy_meta.items()):
     with tabs[i]:
         st.header(name)
-        st.info(f"**Strategy:** {meta['desc']}")
-        
-        # Display Guidelines
         col_left, col_right = st.columns(2)
-        with col_left: st.success(f"**When to Buy:** {meta['buy']}")
-        with col_right: st.warning(f"**When to Sell:** {meta['sell']}")
+        with col_left: st.success(f"**🟢 Buy Signal:** {meta['buy']}")
+        with col_right: st.error(f"**🔴 Sell Signal:** {meta['sell']}")
         
-        # Display Metric Tiles
-        st.markdown("### Filter Thresholds")
-        m_cols = st.columns(len(meta['metrics']))
-        for idx, (label, val) in enumerate(meta['metrics'].items()):
-            m_cols[idx].metric(label, val)
-            
         st.divider()
-        
-        # Process and Display Data
         df = process_strategy(ticker_list, name, target_count, bond_yield)
         
         if not df.empty:
@@ -163,12 +166,11 @@ for i, (name, meta) in enumerate(strategy_meta.items()):
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button(f"📥 Export {name} (CSV)", csv, f"{name.lower().replace(' ','_')}.csv", "text/csv")
             
-            # Display Table with Color Coding
+            # Styled Table
             st.dataframe(df.style.applymap(color_signal, subset=['Signal'])
-                         .highlight_max(subset=['F-Score / 10'], color='#fff3cd'), 
+                         .highlight_max(subset=['F-Score'], color='#fff3cd'), 
                          use_container_width=True, hide_index=True)
             
-            # Sector Pie Chart
             st.plotly_chart(px.pie(df, names='Sector', title=f'Industry Exposure: {name}', hole=0.4), use_container_width=True)
         else:
-            st.error("No matches found in the current scan range. Try lowering target count or refreshing.")
+            st.error("No matches found. Try refreshing or adjusting filters.")
