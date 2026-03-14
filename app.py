@@ -2,12 +2,14 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
-import math
+from datetime import datetime
 import io
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategy Dashboard", layout="wide")
 st.title("📊 Strategy Dashboard")
+current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+st.caption(f"Last Market Sync: {current_time} (March 2026)")
 st.markdown("---")
 
 # --- SIDEBAR ---
@@ -23,22 +25,22 @@ def fetch_nifty_500_tickers():
         df = pd.read_csv(url)
         return [f"{symbol}.NS" for symbol in df['Symbol'].tolist()]
     except:
+        # Fallback to high-conviction tickers if NSE is unreachable
         return ["TITAN.NS", "PIDILITIND.NS", "ASIANPAINT.NS", "RELIANCE.NS", "TCS.NS", "HAL.NS", "CDSL.NS"]
 
 def calculate_score(pe, roic, growth, ey, strategy):
     score = 0
     if strategy == "Coffee Can":
-        score += (3 if roic > 20 else 1.5 if roic > 15 else 0)
-        score += (3 if growth > 15 else 1.5 if growth > 10 else 0)
-        score += (4 if pe < 40 else 2 if pe < 60 else 0)
+        score += (4 if roic > 20 else 2 if roic > 15 else 0)
+        score += (4 if growth > 15 else 2 if growth > 10 else 0)
+        score += (2 if pe < 50 else 0)
     elif strategy == "Magic Formula":
         score += (5 if roic > 25 else 2.5 if roic > 18 else 0)
         score += (5 if ey > 10 else 2.5 if ey > 6 else 0)
     elif strategy == "Lynch":
         peg = pe / growth if growth > 0 else 10
-        score += (4 if peg < 1.0 else 2 if peg < 1.5 else 0)
-        score += (3 if ey > bond_yield else 0)
-        score += (3 if growth > 20 else 1.5)
+        score += (5 if peg < 1.0 else 2.5 if peg < 1.5 else 0)
+        score += (5 if ey > bond_yield else 0)
     return round(score, 1)
 
 @st.cache_data(ttl=3600)
@@ -50,19 +52,17 @@ def screen_universe(tickers, strategy, limit, b_yield):
             s = yf.Ticker(ticker)
             info = s.info
             pe = info.get('trailingPE', 0)
-            eps = info.get('trailingEps', 0)
-            bvps = info.get('bookValue', 0)
             growth = info.get('earningsGrowth', 0) * 100
             roic = info.get('returnOnEquity', 0) * 100 
             ey = (1 / pe * 100) if pe > 0 else 0
             rev_growth = info.get('revenueGrowth', 0) * 100
             price = info.get('currentPrice')
 
-            graham_num = math.sqrt(22.5 * eps * bvps) if eps > 0 and bvps > 0 else 0
-            
+            # --- NEW SIGNAL LOGIC (STRATEGY-BASED) ---
             signal = "HOLD"
-            if price < graham_num: signal = "BUY (Under Valued)"
-            elif price > (graham_num * 1.5): signal = "SELL (Over Valued)"
+            if strategy == "Coffee Can" and roic > 20 and rev_growth > 12: signal = "BUY (High Quality)"
+            elif strategy == "Magic Formula" and ey > 8: signal = "BUY (Value Play)"
+            elif strategy == "Lynch" and (pe/growth if growth > 0 else 99) < 1.0: signal = "BUY (Underpriced Growth)"
 
             match = False
             if strategy == "Coffee Can" and roic > 15 and rev_growth > 10: match = True
@@ -77,9 +77,10 @@ def screen_universe(tickers, strategy, limit, b_yield):
                     "Signal": signal,
                     "F-Score": calculate_score(pe, roic, growth, ey, strategy),
                     "Price": price,
-                    "Graham No.": round(graham_num, 2),
                     "P/E": round(pe, 2),
                     "ROIC %": round(roic, 2),
+                    "EY %": round(ey, 2),
+                    "Growth %": round(growth, 2),
                     "PEG": round(pe/growth, 2) if growth > 0 else "N/A"
                 })
         except: continue
@@ -88,51 +89,5 @@ def screen_universe(tickers, strategy, limit, b_yield):
 # --- STYLING & CONVERSION ---
 def style_signal(val):
     if 'BUY' in val: color = '#d4edda'; text = '#155724'
-    elif 'SELL' in val: color = '#f8d7da'; text = '#721c24'
     else: color = 'transparent'; text = 'inherit'
-    return f'background-color: {color}; color: {text}; font-weight: bold;'
-
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8')
-
-# --- UI EXECUTION ---
-ticker_list = fetch_nifty_500_tickers()
-tabs = st.tabs(["Coffee Can Portfolio", "Magic Formula", "Beating the Market"])
-
-strategies = [
-    ("Coffee Can", {"Min ROCE": "15%", "Min Rev Growth": "10%", "Valuation": "Graham No."}),
-    ("Magic Formula", {"Min ROIC": "18%", "Min Earn Yield": "6%", "Valuation": "Earnings Yield"}),
-    ("Lynch", {"Max PEG": "1.5", "Yield Gap": f">{bond_yield}%", "Valuation": "Price/Growth"})
-]
-
-for i, (name, criteria) in enumerate(strategies):
-    with tabs[i]:
-        st.header(name)
-        st.subheader("Filter Criteria")
-        cols = st.columns(len(criteria))
-        for j, (label, val) in enumerate(criteria.items()):
-            cols[j].metric(label, val)
-        
-        st.markdown("---")
-        df = screen_universe(ticker_list, name, target_count, bond_yield)
-        
-        if not df.empty:
-            # 1. ADDED EXPORT OPTION
-            csv_data = convert_df_to_csv(df)
-            st.download_button(
-                label=f"📥 Export {name} List to CSV",
-                data=csv_data,
-                file_name=f"{name.lower().replace(' ', '_')}_report.csv",
-                mime='text/csv'
-            )
-            
-            # 2. ADDED STYLED DATAFRAME
-            styled_df = df.style.applymap(style_signal, subset=['Signal']) \
-                                .highlight_max(subset=['F-Score'], color='#fff3cd')
-            
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
-            
-            # 3. SECTOR CHART
-            st.plotly_chart(px.pie(df, names='Sector', title=f'{name} Sector Mix', hole=0.4), use_container_width=True)
-        else:
-            st.warning("Scanning Nifty 500 universe for matches...")
+    return f
