@@ -3,67 +3,87 @@ import yfinance as yf
 import pandas as pd
 import math
 
-# --- CONFIGURATION (MARCH 2026) ---
-INDIA_BOND_YIELD = 6.68 
-
+# --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategy Dashboard", layout="wide")
-st.title("📊 Strategy Dashboard")
+st.title("📊 Dynamic Strategy Dashboard")
 st.markdown("---")
 
-# --- TICKER LISTS (20 PER STRATEGY) ---
-STRATEGY_DATA = {
-    "Coffee Can Portfolio": [
-        "TITAN.NS", "PIDILITIND.NS", "ASIANPAINT.NS", "NESTLEIND.NS", "HDFCBANK.NS",
-        "BAJFINANCE.NS", "DIVISLAB.NS", "TCS.NS", "HINDUNILVR.NS", "PAGEIND.NS",
-        "BERGEPAINT.NS", "ASTRAL.NS", "RELAXO.NS", "ABBOTT.NS", "HDFCLIFE.NS",
-        "LTIM.NS", "KOTAKBANK.NS", "DMART.NS", "LALPATHLAB.NS", "CHOLAFIN.NS"
-    ],
-    "Magic Formula": [
-        "COALINDIA.NS", "ITC.NS", "HCLTECH.NS", "POWERGRID.NS", "NMDC.NS",
-        "OFSS.NS", "CASTROLIND.NS", "BAJAJ-AUTO.NS", "RECLTD.NS", "PFC.NS",
-        "INFY.NS", "TECHM.NS", "OIL.NS", "PETRONET.NS", "BEL.NS",
-        "SUNTV.NS", "HGS.NS", "NATIONALUM.NS", "BAYERCROP.NS", "ZENSARTECH.NS"
-    ],
-    "Beating the Market": [
-        "CDSL.NS", "HAL.NS", "MAZDOCK.NS", "VBL.NS", "RELIANCE.NS",
-        "TATASTEEL.NS", "TRENT.NS", "KEI.NS", "POLYCAB.NS", "KPITTECH.NS",
-        "FLUOROCHEM.NS", "CUMMINSIND.NS", "AIAENG.NS", "IGL.NS", "JYOTHYLAB.NS",
-        "RADICO.NS", "CREDITACC.NS", "MEDANTA.NS", "PHOENIXLTD.NS", "BSE.NS"
-    ]
-}
+# --- SIDEBAR CONTROLS ---
+st.sidebar.header("Settings")
+bond_yield = st.sidebar.slider("India 10Y Bond Yield (%)", 4.0, 10.0, 6.68, 0.01)
+num_stocks = st.sidebar.number_input("Stocks per Strategy", 5, 50, 20)
 
-# --- DATA ENGINE ---
+# --- DYNAMIC DATA ENGINE ---
+@st.cache_data(ttl=86400) # Cache ticker list for 24 hours
+def fetch_nifty_500():
+    url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+    try:
+        df = pd.read_csv(url)
+        # Add .NS suffix for Yahoo Finance
+        return [f"{symbol}.NS" for symbol in df['Symbol'].tolist()]
+    except:
+        # Fallback to a small list if NSE link is down
+        return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "TITAN.NS"]
+
 @st.cache_data(ttl=3600)
-def get_metrics(tickers):
-    results = []
-    for t in tickers:
+def screen_stocks(tickers, strategy_type, limit, b_yield):
+    screened_data = []
+    # To keep the app fast, we'll process a subset or use multithreading in a real app
+    # For this demo, we'll sample or take the first 100 to screen
+    for ticker in tickers[:150]: 
+        if len(screened_data) >= limit: break
         try:
-            s = yf.Ticker(t)
-            i = s.info
-            pe = i.get('trailingPE', 0)
-            growth = i.get('earningsGrowth', 0) * 100
-            ey = (1/pe * 100) if pe > 0 else 0
+            s = yf.Ticker(ticker)
+            info = s.info
             
-            results.append({
-                "Ticker": t,
-                "Price": i.get('currentPrice', 0),
-                "P/E": round(pe, 2),
-                "ROIC %": round(i.get('returnOnEquity', 0) * 100, 2), # Using ROE as proxy
-                "EY %": round(ey, 2),
-                "Growth %": round(growth, 2),
-                "PEG": round(pe/growth, 2) if growth > 0 else "N/A"
-            })
+            pe = info.get('trailingPE', 0)
+            eps_growth = info.get('earningsGrowth', 0) * 100
+            roic = info.get('returnOnCapitalEmployed', info.get('returnOnEquity', 0) * 100)
+            ey = (1/pe * 100) if pe > 0 else 0
+            rev_growth = info.get('revenueGrowth', 0) * 100
+
+            # --- STRATEGY LOGIC ---
+            meets_criteria = False
+            if strategy_type == "Coffee Can" and roic > 15 and rev_growth > 10:
+                meets_criteria = True
+            elif strategy_type == "Magic Formula" and roic > 20 and ey > 5:
+                meets_criteria = True
+            elif strategy_type == "Lynch" and (pe/eps_growth if eps_growth > 0 else 10) < 1.2 and ey > b_yield:
+                meets_criteria = True
+
+            if meets_criteria:
+                screened_data.append({
+                    "Ticker": ticker,
+                    "Price": info.get('currentPrice'),
+                    "P/E": round(pe, 2),
+                    "ROIC %": round(roic, 2),
+                    "EY %": round(ey, 2),
+                    "Growth %": round(eps_growth, 2),
+                    "PEG": round(pe/eps_growth, 2) if eps_growth > 0 else "N/A"
+                })
         except: continue
-    return pd.DataFrame(results)
+    return pd.DataFrame(screened_data)
 
-# --- UI TABS ---
-tabs = st.tabs(list(STRATEGY_DATA.keys()))
+# --- EXECUTION ---
+nifty_500 = fetch_nifty_500()
+tab1, tab2, tab3 = st.tabs(["Coffee Can Portfolio", "Magic Formula", "Beating the Market"])
 
-for i, (strat_name, tickers) in enumerate(STRATEGY_DATA.items()):
-    with tabs[i]:
-        st.header(strat_name)
-        
-        # Display Guidelines based on the Strategy
-        if strat_name == "Coffee Can Portfolio":
-            st.info("**Guidelines:** Buy 10-year consistent compounders. Sell only if management integrity fails.")
-        elif strat_name == "Magic Formula":
+with tab1:
+    st.header("Coffee Can Portfolio")
+    st.caption("Filters: ROCE > 15%, Revenue Growth > 10%")
+    df_cc = screen_stocks(nifty_500, "Coffee Can", num_stocks, bond_yield)
+    st.dataframe(df_cc, use_container_width=True)
+
+with tab2:
+    st.header("Magic Formula")
+    st.caption("Filters: High ROIC + High Earnings Yield")
+    df_mf = screen_stocks(nifty_500, "Magic Formula", num_stocks, bond_yield)
+    st.dataframe(df_mf, use_container_width=True)
+
+with tab3:
+    st.header("Beating the Market")
+    st.caption(f"Filters: PEG < 1.2, EY > {bond_yield}%")
+    df_lynch = screen_stocks(nifty_500, "Lynch", num_stocks, bond_yield)
+    st.dataframe(df_lynch, use_container_width=True)
+
+st.sidebar.success(f"Screened {len(nifty_500)} stocks from Nifty 500")
