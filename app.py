@@ -6,9 +6,9 @@ import io
 from datetime import datetime, timedelta
 
 # Set page config
-st.set_page_config(page_title="John's Advanced Multi-Strategy Screener", layout="wide")
+st.set_page_config(page_title="John's 2026 Strategy Dashboard", layout="wide")
 
-# --- STRATEGY BENCHMARKS (MARCH 2026) ---
+# --- STRATEGY BENCHMARKS ---
 STRATEGY_BENCHMARKS = {
     "TCS.NS": {"roce": 64.6, "peg": 2.1},
     "NESTLEIND.NS": {"roce": 95.6, "peg": 4.5},
@@ -25,35 +25,50 @@ def fetch_nifty500_tickers():
     df = pd.read_csv(io.StringIO(response.text))
     return [f"{s}.NS" for s in df['Symbol'].tolist()]
 
-def get_comprehensive_data(ticker):
+def get_comprehensive_data(ticker, horizon_months):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        hist = stock.history(period="7mo") # Fetch 7 months for 6-month momentum
+        # Dynamic history based on horizon
+        hist = stock.history(period=f"{horizon_months + 1}mo")
         
-        # 1. Price & Basic Metrics
         price = info.get('currentPrice', 0)
         eps = info.get('trailingEps', 1)
-        bvps = info.get('bookValue', 1)
-        
-        # 2. Manual Metrics (Screener.in Standards)
-        # ROCE
         roce = info.get('returnOnCapitalEmployed', info.get('returnOnAssets', 0) * 2) * 100
         if ticker in STRATEGY_BENCHMARKS: roce = STRATEGY_BENCHMARKS[ticker]['roce']
         
-        # PEG (Lynch)
         peg = info.get('pegRatio', (price/eps)/15)
         if ticker in STRATEGY_BENCHMARKS: peg = STRATEGY_BENCHMARKS[ticker].get('peg', peg)
         
-        # Earnings Yield (Magic Formula / Acquirer's Multiple)
         ebit = info.get('ebitda', 0)
         ev = info.get('enterpriseValue', 1)
         ey = (ebit / ev) * 100 if ev > 0 else 0
         
-        # 3. Quant Momentum (6-Month Price Change)
+        # Momentum for selected horizon
         momentum = 0
-        if len(hist) > 120:
+        if len(hist) > 20:
             momentum = ((hist['Close'].iloc[-1] / hist['Close'].iloc[0]) - 1) * 100
+
+        # --- EXIT LOGIC ---
+        exit_reason = ""
+        is_exit = False
+        
+        # 1. Fundamental Exit (Coffee Can)
+        if roce < 15:
+            is_exit = True
+            exit_reason = "ROCE < 15% (Moat Failure)"
+        
+        # 2. Valuation Exit (Lynch/Magic)
+        if peg > 3.0:
+            is_exit = True
+            exit_reason = "PEG > 3.0 (Severe Overvaluation)"
+            
+        # 3. Momentum Exit (For 3-6 month horizons)
+        if horizon_months <= 6 and momentum < -5:
+            is_exit = True
+            exit_reason = f"Trend Reversal ({horizon_months}m Mom < -5%)"
+
+        signal = "🔴 EXIT" if is_exit else ("🟢 HOLD" if (roce > 20 and peg < 1.5) else "🟡 WATCH")
 
         return {
             "Ticker": ticker.replace(".NS", ""),
@@ -62,73 +77,62 @@ def get_comprehensive_data(ticker):
             "PEG": round(peg, 2),
             "EY (%)": round(ey, 2),
             "Momentum (%)": round(momentum, 2),
-            "Acquirer Multiple (EV/EBIT)": round(ev/ebit, 2) if ebit > 0 else 0,
-            "Signal": "🟢 HOLD" if (roce > 15 and peg < 1.5) else ("🔴 SELL" if peg > 3.0 else "🟡 WATCH")
+            "Acquirer Multiple": round(ev/ebit, 2) if ebit > 0 else 0,
+            "Signal": signal,
+            "Exit Reason": exit_reason if is_exit else "Fundamentals Intact"
         }
     except: return None
 
-# --- APP UI ---
+# --- UI ---
 st.title("🏛️ Multi-Strategy NIFTY 500 Dashboard")
 
-# Legend
-with st.expander("📖 View Strategy Rules"):
-    c1, c2, c3, c4 = st.columns(4)
-    c1.info("**Coffee Can**: ROCE > 15%")
-    c2.info("**Magic Formula**: High EY + High ROCE")
-    c3.info("**Quant Momentum**: High 6M Price Return")
-    c4.info("**Acquirer's Mult**: Low EV/EBIT (Deep Value)")
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    horizon = st.selectbox("Select Investment Horizon", [3, 6, 9], format_func=lambda x: f"{x} Months")
+    st.divider()
+    st.markdown("""
+    **Exit Protocol:**
+    - **3-6 Months:** Focus on Price Momentum. Exit if trend reverses.
+    - **9 Months+:** Focus on ROCE. Exit if business efficiency drops.
+    """)
 
-if st.button("🚀 Run All-Strategy Analysis"):
+# Legend
+with st.expander("📖 View Strategy Rules & Exit Criteria"):
+    c1, c2, c3 = st.columns(3)
+    c1.success("**🟢 HOLD**: Strong Moat + Fair Valuation.")
+    c2.warning("**🟡 WATCH**: Moderate risk; valuation creeping up.")
+    c3.error("**🔴 EXIT**: Sell immediately due to Moat failure or extreme overvaluation.")
+
+if st.button(f"🚀 Run {horizon}-Month Analysis"):
     all_t = fetch_nifty500_tickers()
-    # Processing first 35 + our benchmarks for accuracy demo
     priority = [t for t in all_t if t in STRATEGY_BENCHMARKS.keys()]
-    others = [t for t in all_t if t not in priority][:35]
-    final_list = priority + others
+    watchlist = priority + [t for t in all_t if t not in priority][:35]
     
     results = []
     prog = st.progress(0)
-    for i, t in enumerate(final_list):
-        data = get_comprehensive_data(t)
+    for i, t in enumerate(watchlist):
+        data = get_comprehensive_data(t, horizon)
         if data: results.append(data)
-        prog.progress((i + 1) / len(final_list))
+        prog.progress((i + 1) / len(watchlist))
     
     df = pd.DataFrame(results)
 
-    # UI TABS
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["☕ Coffee Can", "🧙 Magic Formula", "📈 Quant Momentum", "💰 Acquirer's Multiple", "🎯 Special Situations"])
+    # Style function for Exit column
+    def style_exit(v):
+        return 'color: red; font-weight: bold' if v != "Fundamentals Intact" else 'color: gray'
 
-    with tab1:
-        st.subheader("Coffee Can Strategy")
+    tabs = st.tabs(["☕ Coffee Can", "🧙 Magic Formula", "📈 Momentum", "💰 Acquirer", "🎯 Exit Report"])
+
+    with tabs[0]:
         st.dataframe(df[df['ROCE (%)'] > 15].sort_values('ROCE (%)', ascending=False), use_container_width=True)
-
-    with tab2:
-        st.subheader("Magic Formula (Quality + Value)")
-        df['MF_Rank'] = df['ROCE (%)'].rank(ascending=False) + df['EY (%)'].rank(ascending=False)
-        st.dataframe(df.sort_values('MF_Rank'), use_container_width=True)
-
-    with tab3:
-        st.subheader("Quant Momentum (6-Month Velocity)")
+    with tabs[1]:
+        df['Rank'] = df['ROCE (%)'].rank(ascending=False) + df['EY (%)'].rank(ascending=False)
+        st.dataframe(df.sort_values('Rank'), use_container_width=True)
+    with tabs[2]:
         st.dataframe(df.sort_values('Momentum (%)', ascending=False), use_container_width=True)
-
-    with tab4:
-        st.subheader("Acquirer's Multiple (Deep Value)")
-        st.dataframe(df[df['Acquirer Multiple (EV/EBIT)'] > 0].sort_values('Acquirer Multiple (EV/EBIT)'), use_container_width=True)
-
-    with tab5:
-        st.subheader("Special Situations (Current Events)")
-        st.write("Recent & Upcoming Corporate Actions (March 2026):")
-        # Hardcoded event data based on recent March 2026 filings
-        events = pd.DataFrame([
-            {"Ticker": "SILVERTOUCH", "Event": "Stock Split (1:5)", "Record Date": "06-Mar-2026"},
-            {"Ticker": "METROPOLIS", "Event": "Bonus Issue (3:1)", "Record Date": "20-Mar-2026"},
-            {"Ticker": "NAVA", "Event": "Buyback (Tender)", "Close Date": "12-Mar-2026"},
-            {"Ticker": "V2RETAIL", "Event": "Stock Split (1:10)", "Record Date": "26-Mar-2026"}
-        ])
-        st.table(events)
-else:
-    st.info("Click the button above to synchronize Nifty 500 data and run all strategies.")
-
-
-
-
-
+    with tabs[3]:
+        st.dataframe(df.sort_values('Acquirer Multiple'), use_container_width=True)
+    with tabs[4]:
+        st.subheader("⚠️ Stocks Triggering Exit Signals")
+        exit_df = df[df['Signal'] == "🔴 EXIT"][['Ticker', 'Price', 'Signal', 'Exit Reason']]
+        st.dataframe(exit_df.style.applymap(lambda x: 'background-color: #ff4b4b', subset=['Signal']), use_container_width=True)
