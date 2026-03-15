@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 import requests
 import io
-from datetime import datetime, timedelta
 
 # Set page config
 st.set_page_config(page_title="John's 2026 Strategy Dashboard", layout="wide")
@@ -29,7 +28,6 @@ def get_comprehensive_data(ticker, horizon_months):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        # Dynamic history based on horizon
         hist = stock.history(period=f"{horizon_months + 1}mo")
         
         price = info.get('currentPrice', 0)
@@ -44,31 +42,29 @@ def get_comprehensive_data(ticker, horizon_months):
         ev = info.get('enterpriseValue', 1)
         ey = (ebit / ev) * 100 if ev > 0 else 0
         
-        # Momentum for selected horizon
+        # Momentum
         momentum = 0
         if len(hist) > 20:
             momentum = ((hist['Close'].iloc[-1] / hist['Close'].iloc[0]) - 1) * 100
 
-        # --- EXIT LOGIC ---
-        exit_reason = ""
-        is_exit = False
-        
-        # 1. Fundamental Exit (Coffee Can)
-        if roce < 15:
-            is_exit = True
-            exit_reason = "ROCE < 15% (Moat Failure)"
-        
-        # 2. Valuation Exit (Lynch/Magic)
-        if peg > 3.0:
-            is_exit = True
-            exit_reason = "PEG > 3.0 (Severe Overvaluation)"
-            
-        # 3. Momentum Exit (For 3-6 month horizons)
-        if horizon_months <= 6 and momentum < -5:
-            is_exit = True
-            exit_reason = f"Trend Reversal ({horizon_months}m Mom < -5%)"
+        # --- CONSOLIDATED SIGNAL LOGIC ---
+        action = "🟡 WATCH"
+        reason = "Fundamentals Neutral"
 
-        signal = "🔴 EXIT" if is_exit else ("🟢 HOLD" if (roce > 20 and peg < 1.5) else "🟡 WATCH")
+        # 1. EXIT LOGIC (Priority)
+        if roce < 15 or peg > 3.0 or (horizon_months <= 6 and momentum < -10):
+            action = "🔴 EXIT"
+            reason = "Moat failure or Overvalued/Trend break"
+        
+        # 2. BUY LOGIC (Strict Criteria)
+        elif roce > 25 and 0.1 < peg < 1.0 and ey > 8:
+            action = "🔵 BUY"
+            reason = "Undervalued Quality (High ROCE + Low PEG)"
+
+        # 3. HOLD LOGIC
+        elif roce > 18 and peg < 1.8:
+            action = "🟢 HOLD"
+            reason = "Steady Compounder"
 
         return {
             "Ticker": ticker.replace(".NS", ""),
@@ -77,9 +73,8 @@ def get_comprehensive_data(ticker, horizon_months):
             "PEG": round(peg, 2),
             "EY (%)": round(ey, 2),
             "Momentum (%)": round(momentum, 2),
-            "Acquirer Multiple": round(ev/ebit, 2) if ebit > 0 else 0,
-            "Signal": signal,
-            "Exit Reason": exit_reason if is_exit else "Fundamentals Intact"
+            "Signal": action,
+            "Action Detail": reason
         }
     except: return None
 
@@ -88,25 +83,19 @@ st.title("🏛️ Multi-Strategy NIFTY 500 Dashboard")
 
 with st.sidebar:
     st.header("⚙️ Configuration")
-    horizon = st.selectbox("Select Investment Horizon", [3, 6, 9], format_func=lambda x: f"{x} Months")
+    horizon = st.selectbox("Investment Horizon", [3, 6, 9], format_func=lambda x: f"{x} Months")
     st.divider()
     st.markdown("""
-    **Exit Protocol:**
-    - **3-6 Months:** Focus on Price Momentum. Exit if trend reverses.
-    - **9 Months+:** Focus on ROCE. Exit if business efficiency drops.
+    **Signal Glossary:**
+    - **🔵 BUY:** High Quality (ROCE > 25%) + Cheap (PEG < 1.0).
+    - **🟢 HOLD:** Core position; fundamentals are stable.
+    - **🔴 EXIT:** Fundamental breakdown or extreme price risk.
     """)
 
-# Legend
-with st.expander("📖 View Strategy Rules & Exit Criteria"):
-    c1, c2, c3 = st.columns(3)
-    c1.success("**🟢 HOLD**: Strong Moat + Fair Valuation.")
-    c2.warning("**🟡 WATCH**: Moderate risk; valuation creeping up.")
-    c3.error("**🔴 EXIT**: Sell immediately due to Moat failure or extreme overvaluation.")
-
-if st.button(f"🚀 Run {horizon}-Month Analysis"):
+if st.button(f"🚀 Analyze Market ({horizon}m Horizon)"):
     all_t = fetch_nifty500_tickers()
     priority = [t for t in all_t if t in STRATEGY_BENCHMARKS.keys()]
-    watchlist = priority + [t for t in all_t if t not in priority][:35]
+    watchlist = priority + [t for t in all_t if t not in priority][:40]
     
     results = []
     prog = st.progress(0)
@@ -117,22 +106,26 @@ if st.button(f"🚀 Run {horizon}-Month Analysis"):
     
     df = pd.DataFrame(results)
 
-    # Style function for Exit column
-    def style_exit(v):
-        return 'color: red; font-weight: bold' if v != "Fundamentals Intact" else 'color: gray'
+    def style_signal(v):
+        colors = {'🔵 BUY': '#1f77b4', '🟢 HOLD': '#2ca02c', '🔴 EXIT': '#d62728', '🟡 WATCH': '#ff7f0e'}
+        return f'background-color: {colors.get(v, "white")}; color: white; font-weight: bold'
 
-    tabs = st.tabs(["☕ Coffee Can", "🧙 Magic Formula", "📈 Momentum", "💰 Acquirer", "🎯 Exit Report"])
+    tabs = st.tabs(["📊 Market Overview", "🔵 BUY List", "🔴 EXIT List", "🧙 Strategy Rankings"])
 
     with tabs[0]:
-        st.dataframe(df[df['ROCE (%)'] > 15].sort_values('ROCE (%)', ascending=False), use_container_width=True)
+        st.subheader("Full Watchlist Analysis")
+        st.dataframe(df.style.applymap(style_signal, subset=['Signal']), use_container_width=True)
+
     with tabs[1]:
-        df['Rank'] = df['ROCE (%)'].rank(ascending=False) + df['EY (%)'].rank(ascending=False)
-        st.dataframe(df.sort_values('Rank'), use_container_width=True)
+        st.subheader("🔥 Fresh BUY Opportunities")
+        st.write("Stocks meeting strict Quality + Value criteria.")
+        st.dataframe(df[df['Signal'] == "🔵 BUY"].sort_values('ROCE (%)', ascending=False), use_container_width=True)
+
     with tabs[2]:
-        st.dataframe(df.sort_values('Momentum (%)', ascending=False), use_container_width=True)
+        st.subheader("⚠️ Critical EXIT Alerts")
+        st.dataframe(df[df['Signal'] == "🔴 EXIT"], use_container_width=True)
+
     with tabs[3]:
-        st.dataframe(df.sort_values('Acquirer Multiple'), use_container_width=True)
-    with tabs[4]:
-        st.subheader("⚠️ Stocks Triggering Exit Signals")
-        exit_df = df[df['Signal'] == "🔴 EXIT"][['Ticker', 'Price', 'Signal', 'Exit Reason']]
-        st.dataframe(exit_df.style.applymap(lambda x: 'background-color: #ff4b4b', subset=['Signal']), use_container_width=True)
+        st.subheader("Top Ranks (Magic Formula & Momentum)")
+        df['MF_Rank'] = df['ROCE (%)'].rank(ascending=False) + df['EY (%)'].rank(ascending=False)
+        st.dataframe(df.sort_values('MF_Rank').head(15), use_container_width=True)
